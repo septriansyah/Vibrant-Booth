@@ -61,13 +61,44 @@ export default function App() {
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [retakingIndex, setRetakingIndex] = useState<number | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- Camera Setup ---
-  const startCamera = async () => {
+  const stopCamera = useCallback(() => {
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+    if (videoRef.current && videoRef.current.srcObject) {
+      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+      tracks.forEach(track => {
+        track.onended = null;
+        track.stop();
+      });
+      videoRef.current.srcObject = null;
+      setIsStreaming(false);
+    }
+  }, []);
+
+  const startCamera = useCallback(async (retry = 0): Promise<void> => {
     if (view !== 'booth') return;
+
+    // Stop any existing stream first to avoid conflicts
+    if (videoRef.current && videoRef.current.srcObject) {
+      const oldTracks = (videoRef.current.srcObject as MediaStream).getTracks();
+      oldTracks.forEach(track => {
+        track.onended = null;
+        track.stop();
+      });
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraError(null);
+
     try {
       const isLandscapeMode = mode === 'landscape-video' || mode === 'live-strip';
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -80,20 +111,74 @@ export default function App() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setIsStreaming(true);
-      }
-    } catch (err) {
-      console.error("Error accessing camera:", err);
-      alert("Please allow camera access to use the photo booth!");
-    }
-  };
+        setCameraError(null);
 
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-      tracks.forEach(track => track.stop());
-      setIsStreaming(false);
+        // Listen for unexpected track end (e.g. permission revoked, hardware disconnect)
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            console.warn('Camera track ended unexpectedly, attempting recovery...');
+            setIsStreaming(false);
+            setCameraError('Kamera terputus. Mencoba menyambung ulang...');
+            retryTimeoutRef.current = setTimeout(() => {
+              startCamera(0);
+            }, 1500);
+          };
+        }
+      }
+    } catch (err: any) {
+      console.error("Error accessing camera:", err);
+
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError('Izin kamera ditolak. Aktifkan izin kamera di pengaturan browser, lalu tekan tombol di bawah untuk coba lagi.');
+        setIsStreaming(false);
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setCameraError('Kamera tidak ditemukan. Pastikan perangkat memiliki kamera.');
+        setIsStreaming(false);
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        // Camera is in use by another app or temporarily unavailable - retry
+        if (retry < 3) {
+          setCameraError('Kamera sedang digunakan. Mencoba lagi...');
+          retryTimeoutRef.current = setTimeout(() => {
+            startCamera(retry + 1);
+          }, 1500);
+        } else {
+          setCameraError('Kamera tidak bisa diakses. Tutup aplikasi lain yang menggunakan kamera, lalu coba lagi.');
+          setIsStreaming(false);
+        }
+      } else if (err.name === 'OverconstrainedError') {
+        // facingMode not available, try without it
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: true
+          });
+          if (videoRef.current) {
+            videoRef.current.srcObject = fallbackStream;
+            setIsStreaming(true);
+            setCameraError(null);
+          }
+        } catch {
+          setCameraError('Kamera tidak bisa diakses. Coba lagi.');
+          setIsStreaming(false);
+        }
+      } else {
+        if (retry < 2) {
+          setCameraError('Gagal akses kamera. Mencoba lagi...');
+          retryTimeoutRef.current = setTimeout(() => {
+            startCamera(retry + 1);
+          }, 2000);
+        } else {
+          setCameraError('Gagal akses kamera. Tekan tombol di bawah untuk coba lagi.');
+          setIsStreaming(false);
+        }
+      }
     }
-  };
+  }, [view, mode, facingMode]);
+
+  const retryCamera = useCallback(() => {
+    setCameraError(null);
+    startCamera(0);
+  }, [startCamera]);
 
   const flipCamera = () => {
     setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
@@ -101,12 +186,12 @@ export default function App() {
 
   useEffect(() => {
     if (view === 'booth') {
-      startCamera();
+      startCamera(0);
     } else {
       stopCamera();
     }
     return () => stopCamera();
-  }, [mode, view, facingMode]);
+  }, [mode, view, facingMode, startCamera, stopCamera]);
 
   // --- Capture Logic ---
   const takePhoto = (): string => {
@@ -689,7 +774,22 @@ export default function App() {
                 muted
                 className={`w-full h-full object-cover ${facingMode === 'user' ? 'transform scale-x-[-1]' : ''} ${capturing ? 'brightness-125' : ''}`}
               />
-              
+
+              {/* Camera Error Overlay */}
+              {cameraError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-6 text-center">
+                  <Camera className="w-12 h-12 text-yellow-400 mb-4" />
+                  <p className="text-white font-bold text-base mb-4 max-w-xs">{cameraError}</p>
+                  <button
+                    onClick={retryCamera}
+                    className="px-6 py-3 bg-yellow-400 border-4 border-black font-black uppercase text-sm shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center gap-2"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Coba Lagi
+                  </button>
+                </div>
+              )}
+
               {/* Frame Overlay for Single Mode */}
               {mode === 'single-frame' && selectedFrame.id !== 'none' && (
                 <div className={`absolute inset-0 pointer-events-none ${selectedFrame.class}`} />
