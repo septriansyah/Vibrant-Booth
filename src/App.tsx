@@ -4,20 +4,21 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { 
-  Camera, 
-  Video, 
-  Layout, 
-  Image as ImageIcon, 
-  Download, 
-  RefreshCw, 
-  Heart, 
-  Star, 
-  Smile, 
+import {
+  Camera,
+  Video,
+  Layout,
+  Image as ImageIcon,
+  Download,
+  RefreshCw,
+  Heart,
+  Star,
+  Smile,
   Send,
   X,
   ChevronRight,
-  ChevronLeft
+  ChevronLeft,
+  SwitchCamera
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
@@ -59,6 +60,7 @@ export default function App() {
   const [feedback, setFeedback] = useState('');
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [retakingIndex, setRetakingIndex] = useState<number | null>(null);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -68,12 +70,12 @@ export default function App() {
     if (view !== 'booth') return;
     try {
       const isLandscapeMode = mode === 'landscape-video' || mode === 'live-strip';
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          width: isLandscapeMode ? 1280 : 720, 
-          height: isLandscapeMode ? 720 : 1280,
-          facingMode: 'user' 
-        } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: isLandscapeMode ? 1920 : 1080 },
+          height: { ideal: isLandscapeMode ? 1080 : 1920 },
+          facingMode: facingMode
+        }
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -93,6 +95,10 @@ export default function App() {
     }
   };
 
+  const flipCamera = () => {
+    setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
+  };
+
   useEffect(() => {
     if (view === 'booth') {
       startCamera();
@@ -100,7 +106,7 @@ export default function App() {
       stopCamera();
     }
     return () => stopCamera();
-  }, [mode, view]);
+  }, [mode, view, facingMode]);
 
   // --- Capture Logic ---
   const takePhoto = (): string => {
@@ -111,7 +117,13 @@ export default function App() {
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     if (ctx) {
+      if (facingMode === 'user') {
+        // Mirror the photo for front camera to match preview
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
       ctx.drawImage(video, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
       return canvas.toDataURL('image/jpeg');
     }
     return '';
@@ -670,12 +682,12 @@ export default function App() {
             </div>
 
             <div className={`relative aspect-video bg-black rounded-lg overflow-hidden border-2 border-black ${mode === 'live-strip' ? 'aspect-[3/4] max-w-md mx-auto' : ''}`}>
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                playsInline 
-                muted 
-                className={`w-full h-full object-cover transform scale-x-[-1] ${capturing ? 'brightness-125' : ''}`}
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover ${facingMode === 'user' ? 'transform scale-x-[-1]' : ''} ${capturing ? 'brightness-125' : ''}`}
               />
               
               {/* Frame Overlay for Single Mode */}
@@ -709,7 +721,15 @@ export default function App() {
             </div>
 
             <div className="mt-6 flex flex-wrap gap-4 justify-center">
-              <button 
+              <button
+                onClick={flipCamera}
+                disabled={capturing}
+                className="px-6 py-4 bg-white border-4 border-black font-black uppercase text-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all disabled:opacity-50 flex items-center gap-2"
+                title={facingMode === 'user' ? 'Switch to rear camera' : 'Switch to front camera'}
+              >
+                <SwitchCamera />
+              </button>
+              <button
                 onClick={handleCapture}
                 disabled={capturing}
                 className="px-8 py-4 bg-yellow-400 border-4 border-black font-black uppercase text-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all disabled:opacity-50 flex items-center gap-2"
