@@ -1,0 +1,7 @@
+{
+  "name": "Vibrant Photo Booth",
+  "description": "A colorful, interactive photo booth experience with live photo strips, video generation, and custom frames.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
