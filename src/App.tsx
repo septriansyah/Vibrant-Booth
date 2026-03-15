@@ -4,20 +4,21 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { 
-  Camera, 
-  Video, 
-  Layout, 
-  Image as ImageIcon, 
-  Download, 
-  RefreshCw, 
-  Heart, 
-  Star, 
-  Smile, 
+import {
+  Camera,
+  Video,
+  Layout,
+  Image as ImageIcon,
+  Download,
+  RefreshCw,
+  Heart,
+  Star,
+  Smile,
   Send,
   X,
   ChevronRight,
-  ChevronLeft
+  ChevronLeft,
+  SwitchCamera
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import confetti from 'canvas-confetti';
@@ -59,48 +60,138 @@ export default function App() {
   const [feedback, setFeedback] = useState('');
   const [feedbackSent, setFeedbackSent] = useState(false);
   const [retakingIndex, setRetakingIndex] = useState<number | null>(null);
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  const [cameraError, setCameraError] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- Camera Setup ---
-  const startCamera = async () => {
+  const stopCamera = useCallback(() => {
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+    if (videoRef.current && videoRef.current.srcObject) {
+      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+      tracks.forEach(track => {
+        track.onended = null;
+        track.stop();
+      });
+      videoRef.current.srcObject = null;
+      setIsStreaming(false);
+    }
+  }, []);
+
+  const startCamera = useCallback(async (retry = 0): Promise<void> => {
     if (view !== 'booth') return;
+
+    // Stop any existing stream first to avoid conflicts
+    if (videoRef.current && videoRef.current.srcObject) {
+      const oldTracks = (videoRef.current.srcObject as MediaStream).getTracks();
+      oldTracks.forEach(track => {
+        track.onended = null;
+        track.stop();
+      });
+      videoRef.current.srcObject = null;
+    }
+
+    setCameraError(null);
+
     try {
       const isLandscapeMode = mode === 'landscape-video' || mode === 'live-strip';
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          width: isLandscapeMode ? 1280 : 720, 
-          height: isLandscapeMode ? 720 : 1280,
-          facingMode: 'user' 
-        } 
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: isLandscapeMode ? 1920 : 1080 },
+          height: { ideal: isLandscapeMode ? 1080 : 1920 },
+          facingMode: facingMode
+        }
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setIsStreaming(true);
-      }
-    } catch (err) {
-      console.error("Error accessing camera:", err);
-      alert("Please allow camera access to use the photo booth!");
-    }
-  };
+        setCameraError(null);
 
-  const stopCamera = () => {
-    if (videoRef.current && videoRef.current.srcObject) {
-      const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
-      tracks.forEach(track => track.stop());
-      setIsStreaming(false);
+        // Listen for unexpected track end (e.g. permission revoked, hardware disconnect)
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            console.warn('Camera track ended unexpectedly, attempting recovery...');
+            setIsStreaming(false);
+            setCameraError('Kamera terputus. Mencoba menyambung ulang...');
+            retryTimeoutRef.current = setTimeout(() => {
+              startCamera(0);
+            }, 1500);
+          };
+        }
+      }
+    } catch (err: any) {
+      console.error("Error accessing camera:", err);
+
+      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+        setCameraError('Izin kamera ditolak. Aktifkan izin kamera di pengaturan browser, lalu tekan tombol di bawah untuk coba lagi.');
+        setIsStreaming(false);
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        setCameraError('Kamera tidak ditemukan. Pastikan perangkat memiliki kamera.');
+        setIsStreaming(false);
+      } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+        // Camera is in use by another app or temporarily unavailable - retry
+        if (retry < 3) {
+          setCameraError('Kamera sedang digunakan. Mencoba lagi...');
+          retryTimeoutRef.current = setTimeout(() => {
+            startCamera(retry + 1);
+          }, 1500);
+        } else {
+          setCameraError('Kamera tidak bisa diakses. Tutup aplikasi lain yang menggunakan kamera, lalu coba lagi.');
+          setIsStreaming(false);
+        }
+      } else if (err.name === 'OverconstrainedError') {
+        // facingMode not available, try without it
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({
+            video: true
+          });
+          if (videoRef.current) {
+            videoRef.current.srcObject = fallbackStream;
+            setIsStreaming(true);
+            setCameraError(null);
+          }
+        } catch {
+          setCameraError('Kamera tidak bisa diakses. Coba lagi.');
+          setIsStreaming(false);
+        }
+      } else {
+        if (retry < 2) {
+          setCameraError('Gagal akses kamera. Mencoba lagi...');
+          retryTimeoutRef.current = setTimeout(() => {
+            startCamera(retry + 1);
+          }, 2000);
+        } else {
+          setCameraError('Gagal akses kamera. Tekan tombol di bawah untuk coba lagi.');
+          setIsStreaming(false);
+        }
+      }
     }
+  }, [view, mode, facingMode]);
+
+  const retryCamera = useCallback(() => {
+    setCameraError(null);
+    startCamera(0);
+  }, [startCamera]);
+
+  const flipCamera = () => {
+    setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
   };
 
   useEffect(() => {
     if (view === 'booth') {
-      startCamera();
+      startCamera(0);
     } else {
       stopCamera();
     }
     return () => stopCamera();
-  }, [mode, view]);
+  }, [mode, view, facingMode, startCamera, stopCamera]);
 
   // --- Capture Logic ---
   const takePhoto = (): string => {
@@ -111,7 +202,13 @@ export default function App() {
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d');
     if (ctx) {
+      if (facingMode === 'user') {
+        // Mirror the photo for front camera to match preview
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
       ctx.drawImage(video, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // Reset transform
       return canvas.toDataURL('image/jpeg');
     }
     return '';
@@ -486,7 +583,7 @@ export default function App() {
             <div className="pt-4">
               <button 
                 onClick={() => setView('booth')}
-                className="px-12 py-6 bg-black text-white font-black uppercase text-2xl shadow-[8px_8px_0px_0px_rgba(255,99,33,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center gap-4 mx-auto group"
+                className="px-8 py-4 md:px-12 md:py-6 bg-black text-white font-black uppercase text-lg md:text-2xl shadow-[6px_6px_0px_0px_rgba(255,99,33,1)] md:shadow-[8px_8px_0px_0px_rgba(255,99,33,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center gap-3 md:gap-4 mx-auto group"
               >
                 Start Experience 
                 <ChevronRight className="group-hover:translate-x-2 transition-transform" />
@@ -670,14 +767,29 @@ export default function App() {
             </div>
 
             <div className={`relative aspect-video bg-black rounded-lg overflow-hidden border-2 border-black ${mode === 'live-strip' ? 'aspect-[3/4] max-w-md mx-auto' : ''}`}>
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                playsInline 
-                muted 
-                className={`w-full h-full object-cover transform scale-x-[-1] ${capturing ? 'brightness-125' : ''}`}
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover ${facingMode === 'user' ? 'transform scale-x-[-1]' : ''} ${capturing ? 'brightness-125' : ''}`}
               />
-              
+
+              {/* Camera Error Overlay */}
+              {cameraError && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 z-20 p-6 text-center">
+                  <Camera className="w-12 h-12 text-yellow-400 mb-4" />
+                  <p className="text-white font-bold text-base mb-4 max-w-xs">{cameraError}</p>
+                  <button
+                    onClick={retryCamera}
+                    className="px-6 py-3 bg-yellow-400 border-4 border-black font-black uppercase text-sm shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center gap-2"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                    Coba Lagi
+                  </button>
+                </div>
+              )}
+
               {/* Frame Overlay for Single Mode */}
               {mode === 'single-frame' && selectedFrame.id !== 'none' && (
                 <div className={`absolute inset-0 pointer-events-none ${selectedFrame.class}`} />
@@ -709,7 +821,15 @@ export default function App() {
             </div>
 
             <div className="mt-6 flex flex-wrap gap-4 justify-center">
-              <button 
+              <button
+                onClick={flipCamera}
+                disabled={capturing}
+                className="px-6 py-4 bg-white border-4 border-black font-black uppercase text-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all disabled:opacity-50 flex items-center gap-2"
+                title={facingMode === 'user' ? 'Switch to rear camera' : 'Switch to front camera'}
+              >
+                <SwitchCamera />
+              </button>
+              <button
                 onClick={handleCapture}
                 disabled={capturing}
                 className="px-8 py-4 bg-yellow-400 border-4 border-black font-black uppercase text-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all disabled:opacity-50 flex items-center gap-2"
