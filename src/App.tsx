@@ -583,7 +583,7 @@ export default function App() {
             <div className="pt-4">
               <button 
                 onClick={() => setView('booth')}
-                className="px-12 py-6 bg-black text-white font-black uppercase text-2xl shadow-[8px_8px_0px_0px_rgba(255,99,33,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center gap-4 mx-auto group"
+                className="px-8 py-4 md:px-12 md:py-6 bg-black text-white font-black uppercase text-lg md:text-2xl shadow-[6px_6px_0px_0px_rgba(255,99,33,1)] md:shadow-[8px_8px_0px_0px_rgba(255,99,33,1)] hover:translate-x-1 hover:translate-y-1 hover:shadow-none transition-all flex items-center gap-3 md:gap-4 mx-auto group"
               >
                 Start Experience 
                 <ChevronRight className="group-hover:translate-x-2 transition-transform" />
